@@ -32,8 +32,10 @@ fi
 
 echo "Installing MediaWiki"
 SERVER="$WIKI_PROTOCOL://$WIKI_DOMAIN:$WIKI_PORT"
+SKINS=MonoBook,Timeless,Vector # [1]
 sudo -u www-data php maintenance/install.php \
     --scriptpath="" \
+    --skins=$SKINS \
     --pass=$PASS \
     --server=$SERVER \
     --dbname=$DBNAME \
@@ -42,3 +44,7 @@ sudo -u www-data php maintenance/install.php \
     $DB_CONFIG $WIKINAME $ADMIN
 
 run-jobs.sh
+
+# [1] Explicitly pass skins to load here; otherwise MediaWiki will load *all* skins inside the skins directory.
+#     This leads to an error if there is a skin depending on an extension (e.g. the chameleon skin depends on the 
+#     Bootstrap extension) which has not been loaded yet.
