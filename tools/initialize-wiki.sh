@@ -11,7 +11,7 @@ setup_local_settings() {
     if [ "$ELASTICSEARCH_HOST" != "" ]; then
         echo "\$wgNetworkEnvironment[ 'ELASTICSEARCH_HOST' ] = '$ELASTICSEARCH_HOST';" >> LocalSettings.php;
     fi
-    echo 'if (file_exists( "$IP/LocalSettings.Extensions.php" )) require_once( "$IP/LocalSettings.Extensions.php" );' >> LocalSettings.php
+    echo 'if (file_exists( "$IP/LocalSettings.Include.php" )) require_once( "$IP/LocalSettings.Include.php" );' >> LocalSettings.php
 
     sudo -u www-data php maintenance/update.php --skip-external-dependencies --quick
 }
