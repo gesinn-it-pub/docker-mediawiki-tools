@@ -43,6 +43,8 @@ sudo -u www-data php maintenance/install.php \
     --dbpass=$DBPASS \
     $DB_CONFIG $WIKINAME $ADMIN
 
+chown -R www-data:www-data images
+
 run-jobs.sh
 
 # [1] Explicitly pass skins to load here; otherwise MediaWiki will load *all* skins inside the skins directory.
