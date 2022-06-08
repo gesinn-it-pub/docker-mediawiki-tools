@@ -1,5 +1,5 @@
 #!/bin/bash
 
 set -euxo pipefail
-disable-opcache.sh
+enable-opcache.sh
 disable-xdebug.sh

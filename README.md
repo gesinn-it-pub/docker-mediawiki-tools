@@ -2,9 +2,9 @@
 
 Tools to support docker image creation for docker-mediawiki.
 
-# Snippets
+## Snippets
 
-## Add tools to image
+### Add tools to image
 
 Dockerfile:
 ```
@@ -17,7 +17,7 @@ RUN chmod +x /build-tools/* /tools/*
 ENV PATH="/tools:/build-tools:${PATH}"
 ```
 
-## Override startup
+### Override startup
 
 ./tools/startup-container.sh:
 ```
@@ -29,3 +29,7 @@ service cron start
 initialize-wiki.sh
 apache2-foreground
 ```
+
+## Releasing
+
+Set version in `tools\mediawiki-tools.version` and publish release at https://github.com/gesinn-it-pub/docker-mediawiki-tools/releases.
