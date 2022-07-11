@@ -45,8 +45,10 @@ restore_settings() {
 }
 
 setup_cron_job() {
-    echo "Setting up cron job for wiki jobs"
-    echo "*/1 * * * * /usr/bin/timeout -k 60 300 /usr/local/bin/php /var/www/html/maintenance/runJobs.php --maxtime 50 >> /dev/null 2>&1" | crontab -uwww-data -
+    if [ "`type crontab 2>/dev/null`" != "" ]; then
+        echo "Setting up cron job for wiki jobs"
+        echo "*/1 * * * * /usr/bin/timeout -k 60 300 /usr/local/bin/php /var/www/html/maintenance/runJobs.php --maxtime 50 >> /dev/null 2>&1" | crontab -uwww-data -
+    fi
 }
 
 if [ -e LocalSettings.php ]; then
