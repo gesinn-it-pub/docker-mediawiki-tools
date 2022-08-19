@@ -15,6 +15,7 @@ MYSQL_HOST=${MYSQL_HOST:-}
 WIKI_PROTOCOL=${WIKI_PROTOCOL:-http}
 WIKI_DOMAIN=${WIKI_DOMAIN:-wiki.local}
 WIKI_PORT=${WIKI_PORT:-80}
+WIKI_LANGUAGE=${WIKI_LANGUAGE:-en}
 
 if [ "$MYSQL_HOST" != "" ]; then
     echo "Using mysql db at $MYSQL_HOST."
@@ -41,6 +42,7 @@ sudo -u www-data php maintenance/install.php \
     --dbname=$DBNAME \
     --dbuser=$DBUSER \
     --dbpass=$DBPASS \
+    --lang=$WIKI_LANGUAGE \
     $DB_CONFIG $WIKINAME $ADMIN
 
 chown -R www-data:www-data images
