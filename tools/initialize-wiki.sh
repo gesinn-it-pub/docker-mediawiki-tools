@@ -31,17 +31,11 @@ initialize_cirrus() {
 
 save_settings() {
     echo "Saving LocalSettings for later"
-    cp LocalSettings.php /data
-    if [ -e extensions/SemanticMediaWiki/.smw.json ]; then
-        cp extensions/SemanticMediaWiki/.smw.json /data 
-    fi
+    save-wiki-settings.sh
 }
 
 restore_settings() {
-    cp /data/LocalSettings.php .
-    if [ -e /data/.smw.json ]; then
-        cp /data/.smw.json extensions/SemanticMediaWiki
-    fi
+    restore-wiki-settings.sh
 }
 
 setup_cron_job() {
