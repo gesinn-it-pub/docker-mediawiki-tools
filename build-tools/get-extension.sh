@@ -11,3 +11,5 @@ curl -LJ $EXTENSION_URL -o $TGZ_FILE && \
 mkdir $EXTENSION_FOLDER && \
 tar -xzf $TGZ_FILE -C $EXTENSION_FOLDER --strip-components 1 && \
 rm $TGZ_FILE
+
+printf "Done.\n\n"
