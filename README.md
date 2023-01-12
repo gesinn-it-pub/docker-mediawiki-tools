@@ -30,6 +30,13 @@ initialize-wiki.sh
 apache2-foreground
 ```
 
+## Try it
+
+```sh
+> cp .env.sqlite-example .env
+> docker-compose up
+```
+
 ## Releasing
 
 Set version in `tools\mediawiki-tools.version` and publish release at https://github.com/gesinn-it-pub/docker-mediawiki-tools/releases.

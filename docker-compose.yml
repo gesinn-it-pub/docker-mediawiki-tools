@@ -1,0 +1,19 @@
+services:
+  wiki:
+    build: .
+    ports:
+      - "${WIKI_PORT}:80"
+    environment:
+      - WIKI_PROTOCOL=${WIKI_PROTOCOL:-}
+      - WIKI_DOMAIN=${WIKI_DOMAIN:-}
+      - WIKI_PORT=${WIKI_PORT:-}
+      - WIKI_NAME=${WIKI_NAME:-}
+      - WIKI_LANGUAGE=${WIKI_LANGUAGE:-}
+      - WIKI_ADMIN=${WIKI_ADMIN:-}
+      - WIKI_ADMIN_PASS=${WIKI_ADMIN_PASS:-}
+      - MYSQL_HOST=${MYSQL_HOST:-}
+      - INSTALLDBUSER=${INSTALLDBUSER:-root}
+      - INSTALLDBPASS=${INSTALLDBPASS:-database}
+      - DBNAME=${DBNAME:-wiki}
+      - DBUSER=${DBUSER:-wiki}
+      - DBPASS=${DBPASS:-wiki}

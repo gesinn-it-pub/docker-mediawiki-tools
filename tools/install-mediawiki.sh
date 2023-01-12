@@ -2,20 +2,20 @@
 
 set -euo pipefail
 
-PASS=wiki4everyone
-INSTALLDBUSER=root
-INSTALLDBPASS=database
-DBNAME=wiki
-DBUSER=wiki
-DBPASS=wiki
-WIKINAME=wiki
-ADMIN=WikiSysop
-
 MYSQL_HOST=${MYSQL_HOST:-}
 WIKI_PROTOCOL=${WIKI_PROTOCOL:-http}
 WIKI_DOMAIN=${WIKI_DOMAIN:-wiki.local}
 WIKI_PORT=${WIKI_PORT:-80}
 WIKI_LANGUAGE=${WIKI_LANGUAGE:-en}
+WIKI_NAME=${WIKI_NAME:-wiki}
+WIKI_ADMIN=${WIKI_ADMIN:-WikiSysop}
+WIKI_ADMIN_PASS=${WIKI_ADMIN_PASS:-wiki4everyone}
+
+INSTALLDBUSER=${INSTALLDBUSER:-root}
+INSTALLDBPASS=${INSTALLDBPASS:-database}
+DBNAME=${DBNAME:-wiki}
+DBUSER=${DBUSER:-wiki}
+DBPASS=${DBPASS:-wiki}
 
 if [ "$MYSQL_HOST" != "" ]; then
     echo "Using mysql db at $MYSQL_HOST."
@@ -37,13 +37,13 @@ SKINS=MonoBook,Timeless,Vector # [1]
 sudo -u www-data php maintenance/install.php \
     --scriptpath="" \
     --skins=$SKINS \
-    --pass=$PASS \
+    --pass=$WIKI_ADMIN_PASS \
     --server=$SERVER \
     --dbname=$DBNAME \
     --dbuser=$DBUSER \
     --dbpass=$DBPASS \
     --lang=$WIKI_LANGUAGE \
-    $DB_CONFIG $WIKINAME $ADMIN
+    $DB_CONFIG $WIKI_NAME $WIKI_ADMIN
 
 chown -R www-data:www-data images
 
