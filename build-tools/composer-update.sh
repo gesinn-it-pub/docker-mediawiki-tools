@@ -1,3 +1,3 @@
 #!/bin/bash
 
-sudo -u www-data composer update
+sudo -u www-data composer update --prefer-source
