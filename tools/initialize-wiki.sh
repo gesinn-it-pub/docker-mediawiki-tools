@@ -51,6 +51,10 @@ if [ -e LocalSettings.php ]; then
 else
     # Case 2: The container is starting the first time after creation from the image
     echo "LocalSettings.php is missing."
+
+    # Ensure the log folder exists
+    mkdir -p /data/log && chown www-data. /data/log
+
     configure-container.sh
 
     if [ -e /data/LocalSettings.php ]; then
