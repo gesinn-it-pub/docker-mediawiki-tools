@@ -1,0 +1,7 @@
+{
+    "recommendations": [
+        "xdebug.php-pack",
+        "junstyle.php-cs-fixer",
+        "obliviousharmony.vscode-php-codesniffer"
+    ]
+}
