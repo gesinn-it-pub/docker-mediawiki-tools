@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # copy needed files
-cp -r ./files/.vscode /var/www/html/
-cp -r ./files/php/conf.d/99-xdebug.ini /usr/local/etc/php/conf.d/99-xdebug.ini
+cp -r /tools/files/.vscode /var/www/html/
+cp -r /tools/files/php/conf.d/99-xdebug.ini /usr/local/etc/php/conf.d/99-xdebug.ini.DISABLED
 
 # install and activate xdebug
 pecl install xdebug-3.1.6
