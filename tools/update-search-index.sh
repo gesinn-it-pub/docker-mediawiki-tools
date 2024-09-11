@@ -5,5 +5,5 @@ echo "Rebuilding search index"
 
 cd /var/www/html
 
-php extensions/CirrusSearch/maintenance/UpdateSearchIndexConfig.php --startOver
-php extensions/CirrusSearch/maintenance/ForceSearchIndex.php
+php extensions/Cirrussearch/maintenance/UpdateSearchIndexConfig.php --startOver
+php extensions/Cirrussearch/maintenance/ForceSearchIndex.php
