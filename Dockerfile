@@ -1,4 +1,4 @@
-ARG MEDIAWIKI_VERSION=1.35
+ARG MEDIAWIKI_VERSION=1.39
 FROM gesinn/docker-mediawiki-sqlite:${MEDIAWIKI_VERSION}
 
 RUN rm -rf LocalSettings.php /var/www/data
