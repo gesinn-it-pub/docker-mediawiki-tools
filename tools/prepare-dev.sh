@@ -14,7 +14,7 @@ else
 fi
 
 # Install and activate Xdebug
-required_version="3.1.6"
+required_version="3.4.5"
 installed_version=$(php -r 'echo phpversion("xdebug");' 2>/dev/null || echo "not_installed")
 
 if [ "$installed_version" = "not_installed" ]; then
