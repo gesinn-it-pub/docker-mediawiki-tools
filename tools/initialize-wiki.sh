@@ -40,13 +40,6 @@ restore_settings() {
     restore-wiki-settings.sh
 }
 
-setup_cron_job() {
-    if [ "`type crontab 2>/dev/null`" != "" ]; then
-        echo "Setting up cron job for wiki jobs"
-        echo "*/1 * * * * /usr/bin/timeout -k 60 300 /usr/local/bin/php /var/www/html/maintenance/runJobs.php --maxtime 50 >> /dev/null 2>&1" | crontab -uwww-data -
-    fi
-}
-
 if [ -e LocalSettings.php ]; then
     # Case 1: The container has already been started before
     echo ">>> LocalSettings.php exists. Nothing to do."
@@ -72,5 +65,4 @@ else
         save_settings
         run-jobs.sh
     fi
-    setup_cron_job
 fi
