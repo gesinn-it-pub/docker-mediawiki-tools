@@ -22,12 +22,16 @@ initialize_cirrus() {
     if [ "$ELASTICSEARCH_HOST" != "" ]; then
         echo "--- Initializing Cirrus Search ---"
         echo "Waiting for elasticsearch server to be ready..."
-        wait-for-it.sh -h $ELASTICSEARCH_HOST -p 9200 -t 60
+        wait-for-it.sh -h $ELASTICSEARCH_HOST -p 9200 -t 120
         echo '<?php $wgDisableSearchUpdate = true; echo "*** Inside TMP ***\n"; ' >> LocalSettings.TMP.php
-        php extensions/Cirrussearch/maintenance/UpdateSearchIndexConfig.php && \
-        rm LocalSettings.TMP.php && \
-        php extensions/Cirrussearch/maintenance/ForceSearchIndex.php --skipLinks --indexOnSkip && \
+        # Ensure LocalSettings.TMP.php is always removed, even if a command below
+        # fails and set -e aborts the script (prevents stale TMP on container restart)
+        trap 'rm -f LocalSettings.TMP.php' EXIT
+        php extensions/Cirrussearch/maintenance/UpdateSearchIndexConfig.php
+        php extensions/Cirrussearch/maintenance/ForceSearchIndex.php --skipLinks --indexOnSkip
         php extensions/Cirrussearch/maintenance/ForceSearchIndex.php --skipParse
+        rm -f LocalSettings.TMP.php
+        trap - EXIT
     fi
 }
 
@@ -39,6 +43,9 @@ save_settings() {
 restore_settings() {
     restore-wiki-settings.sh
 }
+
+# Remove any stale LocalSettings.TMP.php left over from a previous failed initialization
+rm -f LocalSettings.TMP.php
 
 if [ -e LocalSettings.php ]; then
     # Case 1: The container has already been started before
