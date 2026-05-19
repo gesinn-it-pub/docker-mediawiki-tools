@@ -14,7 +14,37 @@ setup_local_settings() {
     echo 'if (file_exists( "$IP/LocalSettings.Include.php" )) require_once( "$IP/LocalSettings.Include.php" );' >> LocalSettings.php
     echo 'if (file_exists( "$IP/LocalSettings.TMP.php" )) require_once( "$IP/LocalSettings.TMP.php" );' >> LocalSettings.php
 
+    # Disable CirrusSearch deferred updates during initial MW setup.
+    #
+    # Background: extensions that create wiki pages during update.php (e.g. via
+    # vocabulary or schema imports) queue SearchUpdate deferred jobs for those
+    # pages. Because LocalSettings.TMP.php is already in the include chain (see
+    # line above), setting $wgDisableSearchUpdate=true here prevents those jobs
+    # from being enqueued in the first place.
+    #
+    # Without this guard the queued SearchUpdate jobs execute at the start of the
+    # next MW maintenance script (UpdateSearchIndexConfig.php). They send bulk
+    # documents to the "wiki_content" index via the ES auto-create mechanism,
+    # turning it into a plain index. UpdateSearchIndexConfig.php then tries to
+    # register "wiki_content" as an alias pointing to "wiki_content_first", which
+    # fails with: "There is currently an index with the name of the alias."
+    #
+    # Important: $wgDisableSearchUpdate=true only suppresses *new* enqueue
+    # operations — it has no effect on jobs already in the queue — so it must be
+    # set before update.php runs. There is no downside to skipping search updates
+    # here because ForceSearchIndex.php (called by initialize_cirrus below)
+    # rebuilds the full ES index from scratch anyway.
+    if [ "$ELASTICSEARCH_HOST" != "" ]; then
+        echo '<?php $wgDisableSearchUpdate = true;' > LocalSettings.TMP.php
+    fi
+
     sudo -u www-data php maintenance/update.php --skip-external-dependencies --quick
+
+    # Remove TMP after update.php so initialize_cirrus() can create it cleanly.
+    # (initialize_cirrus appends to TMP via >>; starting from an empty file
+    # avoids a duplicate <?php opening tag which would be a PHP parse error.)
+    rm -f LocalSettings.TMP.php
+
     echo "=== Setting up LocalSettings.php ==="
 }
 
