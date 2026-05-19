@@ -14,36 +14,35 @@ setup_local_settings() {
     echo 'if (file_exists( "$IP/LocalSettings.Include.php" )) require_once( "$IP/LocalSettings.Include.php" );' >> LocalSettings.php
     echo 'if (file_exists( "$IP/LocalSettings.TMP.php" )) require_once( "$IP/LocalSettings.TMP.php" );' >> LocalSettings.php
 
-    # Disable CirrusSearch deferred updates during initial MW setup.
+    # Disable search index updates during initial MW setup.
     #
-    # Background: extensions that create wiki pages during update.php (e.g. via
-    # vocabulary or schema imports) queue SearchUpdate deferred jobs for those
-    # pages. Because LocalSettings.TMP.php is already in the include chain (see
-    # line above), setting $wgDisableSearchUpdate=true here prevents those jobs
-    # from being enqueued in the first place.
+    # Background: CirrusSearch registers its own LinksUpdate hooks (e.g.
+    # onLinksUpdateCompleted in Hooks.php) that queue Job\LinksUpdate jobs
+    # independently of MW core's SearchUpdate mechanism. These hooks fire during
+    # update.php for any page that gets a links-table entry, and lazyPush() the
+    # jobs to the job queue — WITHOUT checking $wgDisableSearchUpdate.
     #
-    # Without this guard the queued SearchUpdate jobs execute at the start of the
-    # next MW maintenance script (UpdateSearchIndexConfig.php). They send bulk
-    # documents to the "wiki_content" index via the ES auto-create mechanism,
-    # turning it into a plain index. UpdateSearchIndexConfig.php then tries to
-    # register "wiki_content" as an alias pointing to "wiki_content_first", which
-    # fails with: "There is currently an index with the name of the alias."
+    # If those jobs are later processed (e.g. by Ofelia's run-jobs.sh) AFTER
+    # initialize_cirrus() has filled the ES index via ForceSearchIndex, they
+    # will overwrite/delete the freshly indexed documents, leaving ES empty.
     #
-    # Important: $wgDisableSearchUpdate=true only suppresses *new* enqueue
-    # operations — it has no effect on jobs already in the queue — so it must be
-    # set before update.php runs. There is no downside to skipping search updates
-    # here because ForceSearchIndex.php (called by initialize_cirrus below)
-    # rebuilds the full ES index from scratch anyway.
+    # The fix requires two things:
+    # 1. Set $wgCirrusSearchDisableUpdate=true in addition to $wgDisableSearchUpdate.
+    #    CirrusSearch's Job\JobTraits::run() checks this flag and skips the job
+    #    entirely (see JobTraits.php: "Skipping job: search updates disabled").
+    # 2. Keep TMP active until run-jobs.sh has drained the queue (see call below),
+    #    so all CirrusSearch jobs queued by update.php are processed as no-ops.
+    #    Only after the queue is empty is TMP removed and initialize_cirrus called,
+    #    guaranteeing ForceSearchIndex is the final step that writes to ES.
     if [ "$ELASTICSEARCH_HOST" != "" ]; then
-        echo '<?php $wgDisableSearchUpdate = true;' > LocalSettings.TMP.php
+        # shellcheck disable=SC2016
+        echo '<?php $wgDisableSearchUpdate = true; $wgCirrusSearchDisableUpdate = true;' > LocalSettings.TMP.php
     fi
 
     sudo -u www-data php maintenance/update.php --skip-external-dependencies --quick
 
-    # Remove TMP after update.php so initialize_cirrus() can create it cleanly.
-    # (initialize_cirrus appends to TMP via >>; starting from an empty file
-    # avoids a duplicate <?php opening tag which would be a PHP parse error.)
-    rm -f LocalSettings.TMP.php
+    # TMP is intentionally NOT deleted here — run-jobs.sh (called next in the
+    # main script) must drain the queue while both disable flags are active.
 
     echo "=== Setting up LocalSettings.php ==="
 }
@@ -52,8 +51,9 @@ initialize_cirrus() {
     if [ "$ELASTICSEARCH_HOST" != "" ]; then
         echo "--- Initializing Cirrus Search ---"
         echo "Waiting for elasticsearch server to be ready..."
-        wait-for-it.sh -h $ELASTICSEARCH_HOST -p 9200 -t 120
-        echo '<?php $wgDisableSearchUpdate = true; echo "*** Inside TMP ***\n"; ' >> LocalSettings.TMP.php
+        wait-for-it.sh -h "$ELASTICSEARCH_HOST" -p 9200 -t 120
+        # shellcheck disable=SC2016
+        echo '<?php $wgDisableSearchUpdate = true; $wgCirrusSearchDisableUpdate = true;' > LocalSettings.TMP.php
         # Ensure LocalSettings.TMP.php is always removed, even if a command below
         # fails and set -e aborts the script (prevents stale TMP on container restart)
         trap 'rm -f LocalSettings.TMP.php' EXIT
@@ -98,8 +98,14 @@ else
         echo ">>> /data/LocalSettings.php missing, too. Need to create one."
         install-mediawiki.sh
         setup_local_settings
+        # Drain the job queue while LocalSettings.TMP.php is still active (both
+        # $wgDisableSearchUpdate and $wgCirrusSearchDisableUpdate are set), so
+        # CirrusSearch jobs queued by update.php are processed as no-ops.
+        # Only then remove TMP and run initialize_cirrus, ensuring ForceSearchIndex
+        # is the last operation that writes to Elasticsearch.
+        run-jobs.sh
+        rm -f LocalSettings.TMP.php
         initialize_cirrus
         save_settings
-        run-jobs.sh
     fi
 fi
