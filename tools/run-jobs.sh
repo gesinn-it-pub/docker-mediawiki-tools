@@ -23,12 +23,18 @@
 ##   - Informational messages in the script use the helper `info()` which
 ##     checks the quiet flag. Error messages intentionally still write to
 ##     stderr so that they appear unless `--silent` is used.
+##   - If the lockfile at LOCK_FILE exists, the script exits immediately
+##     (exit 0) without processing the job queue. This lets external
+##     callers (e.g. backup/restore scripts) pause job execution by
+##     creating the lockfile and resume it by removing it, without
+##     needing to stop any long-running daemon/service.
 ##
 
 MAX_TIME=240
 MEMORY_LIMIT=2G
 MAX_JOBS=200
 MW_PATH="/var/www/html"
+LOCK_FILE="${RUN_JOBS_LOCK_FILE:-/tmp/run-jobs.lock}"
 
 set -euo pipefail
 
@@ -67,9 +73,14 @@ if [ "$SILENT" -eq 1 ]; then
   exec >/dev/null 2>&1
 fi
 
-cd "$MW_PATH"
-
 info() { if [ "${QUIET:-0}" -eq 0 ]; then echo "$@"; fi }
+
+if [ -e "$LOCK_FILE" ]; then
+  info "Lockfile $LOCK_FILE present, skipping job run."
+  exit 0
+fi
+
+cd "$MW_PATH"
 
 info "Running jobs"
 
