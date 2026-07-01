@@ -75,7 +75,7 @@ fi
 
 info() { if [ "${QUIET:-0}" -eq 0 ]; then echo "$@"; fi }
 
-if [ -e "$LOCK_FILE" ]; then
+if [ -f "$LOCK_FILE" ]; then
   info "Lockfile $LOCK_FILE present, skipping job run."
   exit 0
 fi
