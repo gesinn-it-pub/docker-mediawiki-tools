@@ -28,6 +28,12 @@
 ##     callers (e.g. backup/restore scripts) pause job execution by
 ##     creating the lockfile and resume it by removing it, without
 ##     needing to stop any long-running daemon/service.
+##   - The lockfile is also re-checked between batches, not just on
+##     startup. Without this, a run already looping through a large
+##     backlog (bounded by --maxjobs/--maxtime per batch, but the loop
+##     itself is unbounded) would ignore a lockfile created after it
+##     started, forcing callers to wait for the entire backlog to drain
+##     before it's safe to proceed with a backup/restore.
 ##
 
 MAX_TIME=240
@@ -101,6 +107,11 @@ if ! [[ "$j" =~ ^[0-9]+$ ]]; then
 fi
 
 while [ "$j" -gt 0 ]; do
+    if [ -f "$LOCK_FILE" ]; then
+      info "Lockfile $LOCK_FILE present, stopping before next batch."
+      exit 0
+    fi
+
     info "Loop $n: $j jobs queued"
     sudo -u www-data php maintenance/runJobs.php \
     -q --maxtime "$MAX_TIME" --memory-limit "$MEMORY_LIMIT" --maxjobs "$MAX_JOBS" \
