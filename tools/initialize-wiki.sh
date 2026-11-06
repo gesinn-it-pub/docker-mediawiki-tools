@@ -52,15 +52,22 @@ initialize_cirrus() {
         echo "--- Initializing Cirrus Search ---"
         echo "Waiting for elasticsearch server to be ready..."
         wait-for-it.sh -h "$ELASTICSEARCH_HOST" -p 9200 -t 120
+        # Updates must stay disabled while UpdateSearchIndexConfig runs, otherwise
+        # wiki_content would be auto-created as a plain index instead of an alias.
         # shellcheck disable=SC2016
         echo '<?php $wgDisableSearchUpdate = true; $wgCirrusSearchDisableUpdate = true;' > LocalSettings.TMP.php
         # Ensure LocalSettings.TMP.php is always removed, even if a command below
         # fails and set -e aborts the script (prevents stale TMP on container restart)
         trap 'rm -f LocalSettings.TMP.php' EXIT
         php extensions/Cirrussearch/maintenance/UpdateSearchIndexConfig.php
+        # The disable flags must NOT be active for ForceSearchIndex: without --queue
+        # it runs the ElasticaWrite jobs in-process, and CirrusSearch skips those
+        # jobs while the flags are set, so nothing would be indexed (silent no-op).
+        # CirrusSearch REL1_46 and newer additionally abort ForceSearchIndex when
+        # $wgCirrusSearchDisableUpdate is true; REL1_43 does not.
+        rm -f LocalSettings.TMP.php
         php extensions/Cirrussearch/maintenance/ForceSearchIndex.php --skipLinks --indexOnSkip
         php extensions/Cirrussearch/maintenance/ForceSearchIndex.php --skipParse
-        rm -f LocalSettings.TMP.php
         trap - EXIT
     fi
 }
