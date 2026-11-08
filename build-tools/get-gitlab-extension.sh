@@ -1,4 +1,6 @@
 #!/bin/bash
+set -euo pipefail
+
 EXTENSION=$1
 VERSION=$2
 EXTENSION_URL_PATH=$3
