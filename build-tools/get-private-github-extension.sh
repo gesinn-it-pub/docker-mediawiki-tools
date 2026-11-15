@@ -12,8 +12,9 @@ echo "Getting $EXTENSION_URL ..."
 
 TGZ_FILE=$(mktemp "/tmp/$EXTENSION-$VERSION.XXXXXX.tgz")
 EXTENSION_FOLDER=extensions/$EXTENSION
-CREATED=0
-trap 'rm -f "$TGZ_FILE"; if [ "$CREATED" = 1 ] && [ "$?" != 0 ]; then rm -rf "$EXTENSION_FOLDER"; fi' EXIT
+mkdir -p extensions
+TMP_FOLDER=$(mktemp -d "extensions/.$EXTENSION.XXXXXX")
+trap 'rm -rf "$TGZ_FILE" "$TMP_FOLDER"' EXIT
 
 TOKEN=$(cat "${GH_API_TOKEN_FILE:-/run/secrets/GH_API_TOKEN}")
 
@@ -24,13 +25,19 @@ curl --fail --silent --show-error --location \
     --config <(printf 'header = "Authorization: token %s"\n' "$TOKEN") \
     "$EXTENSION_URL" -o "$TGZ_FILE"
 
-mkdir "$EXTENSION_FOLDER"
-CREATED=1
-tar -xzf "$TGZ_FILE" -C "$EXTENSION_FOLDER" --strip-components 1
+tar -xzf "$TGZ_FILE" -C "$TMP_FOLDER" --strip-components 1
 
-if [ -z "$(ls -A "$EXTENSION_FOLDER")" ]; then
-    echo "ERROR: $EXTENSION_FOLDER is empty after unpacking $EXTENSION_URL" >&2
+if [ -z "$(ls -A "$TMP_FOLDER")" ]; then
+    echo "ERROR: unpacking $EXTENSION_URL resulted in an empty folder" >&2
     exit 1
 fi
+
+# Only now touch an existing (e.g. bundled) extension; the pinned version wins.
+if [ -e "$EXTENSION_FOLDER" ]; then
+    echo "Replacing bundled extension $EXTENSION"
+    rm -rf "$EXTENSION_FOLDER"
+fi
+mv "$TMP_FOLDER" "$EXTENSION_FOLDER"
+chmod 755 "$EXTENSION_FOLDER"
 
 printf "Done.\n\n"
