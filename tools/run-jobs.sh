@@ -13,12 +13,6 @@
 ##                    before this option existed.
 ##   -h, --help       Print a short usage message and exit.
 ##
-## Environment:
-##   RUN_JOBS_LOCK_FILE        Lockfile path (default /tmp/run-jobs.lock).
-##   RUN_JOBS_SKIP_PRECHECK=1  Disable the MediaWiki-free empty-queue
-##                             pre-check (job-queue-empty.php) and always
-##                             use showJobs.php.
-##
 ## Examples:
 ##   Run normally:
 ##     tools/run-jobs.sh
@@ -65,7 +59,6 @@ MAX_TIME=240
 MEMORY_LIMIT=2G
 MAX_JOBS=200
 MW_PATH="/var/www/html"
-TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCK_FILE="${RUN_JOBS_LOCK_FILE:-/tmp/run-jobs.lock}"
 
 set -euo pipefail
@@ -137,19 +130,6 @@ else
 fi
 
 get_queued_jobs() {
-    # Cheap pre-check without a MediaWiki bootstrap (see
-    # job-queue-empty.php): if the job table provably holds no row (for
-    # this type), the answer is 0 and showJobs.php is not needed. Only
-    # exit code 0 of the helper counts; any other result (rows present,
-    # unknown settings, DB error, missing helper) falls through to the
-    # full showJobs.php check below, i.e. the previous behaviour.
-    # RUN_JOBS_SKIP_PRECHECK=1 disables the pre-check.
-    if [ "${RUN_JOBS_SKIP_PRECHECK:-0}" != "1" ] \
-       && php "$TOOLS_DIR/job-queue-empty.php" "$JOB_TYPE" >/dev/null 2>&1; then
-      echo 0
-      return
-    fi
-
     # --type is passed through to showJobs.php itself (not just filtered
     # from its output here) so the empty-queue check only ever counts the
     # ONE type this invocation cares about - a run-jobs.sh --type=X

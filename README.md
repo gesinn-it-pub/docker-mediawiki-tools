@@ -38,15 +38,6 @@ apache2-foreground
 called periodically (e.g. by an Ofelia `job-exec`). While the lock file
 (`RUN_JOBS_LOCK_FILE`, default `/tmp/run-jobs.lock`) exists, no jobs are run.
 
-**Empty-queue pre-check.** Before every run `run-jobs.sh` asks `job-queue-empty.php` whether the
-job table holds any row (for the type). That check does not bootstrap MediaWiki (a few ms instead
-of several hundred ms) and skips `showJobs.php`/`runJobs.php` when the table is provably empty.
-It reads the DB settings from `LocalSettings*.php` with a regular expression and therefore only
-handles literal `$wgDBserver/$wgDBname/$wgDBuser/$wgDBpassword/$wgDBprefix` assignments, one per
-line, with `$wgDBtype = 'mysql'`. In every other case (SQLite, `$wgJobTypeConf` set, interpolated
-values, no `mysqli`, wrong credentials, DB unreachable) it answers "unknown" and `run-jobs.sh`
-falls back to the full check (fail-open). Disable with `RUN_JOBS_SKIP_PRECHECK=1`.
-
 ### Job runner (long-running)
 
 `job-runner.php` is a long-running alternative to calling `run-jobs.sh` every few seconds. It
@@ -113,11 +104,9 @@ with `RUN_JOBS_PHP_OPTS`; set it to the empty string to disable.
 | Variable | Used by | Default | Meaning |
 |----------|---------|---------|---------|
 | `RUN_JOBS_LOCK_FILE` | run-jobs.sh, job-runner.php | `/tmp/run-jobs.lock` | Pause while this file exists |
-| `RUN_JOBS_SKIP_PRECHECK` | run-jobs.sh | unset | `1` disables the empty-queue pre-check |
 | `RUN_JOBS_PHP_OPTS` | run-jobs-daemon.sh | OPcache file cache | PHP options for the runner; `""` disables |
 | `RUN_JOBS_WAKE_SOCKET` | job-runner.php, job-wake.php | `/tmp/run-jobs.wake` | Wake-up socket path |
 | `MW_INSTALL_PATH` | job-runner.php | `/var/www/html` | MediaWiki root |
-| `MW_PATH` | job-queue-empty.php | `/var/www/html` | MediaWiki root (settings lookup) |
 
 Compatible with MediaWiki 1.39 and 1.43. In local measurements with SemanticDependencyUpdater 5.2.0
 (SMW >= 7.4.0) the divergences seen with earlier versions did not occur again; the cause of the
@@ -126,7 +115,7 @@ earlier ones is not established, so this is an observation, not a guarantee.
 ### Tests
 
 ```sh
-bash tests/test-job-queue-empty.sh   # add TEST_DB_HOST/USER/PASS/NAME (+ ext-mysqli) for the DB cases
+bash tests/test-run-jobs-daemon.sh   # daemon lock, TERM handling and restart, with stubbed sudo/php
 ```
 
 ## Try it
