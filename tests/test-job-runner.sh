@@ -63,7 +63,9 @@ sleep 3
 push_null 3000 100000
 wait_busy; check "runner is busy (child running)" 0 $?
 max=0
+t_start=$(date +%s)
 for i in $(seq 30); do
+  [ $(( $(date +%s) - t_start )) -gt 40 ] && break # a blocked writer must fail the check, not stall the test
   t=$(dx "curl -s -o /dev/null -m 90 -w '%{time_total}' -H 'Host: $HOST' -X POST -d 'action=query&meta=siteinfo&format=json' http://localhost/api.php")
   max=$(awk -v a="$t" -v b="$max" 'BEGIN{print (a>b)?a:b}')
 done
