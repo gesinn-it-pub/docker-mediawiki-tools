@@ -1,0 +1,104 @@
+#!/bin/bash
+## Integration test for tools/job-runner.php, tools/run-jobs-daemon.sh and tools/files/job-wake.php
+## against a RUNNING MediaWiki container (needs the real runner, MediaWiki and a database).
+##
+## It deletes all rows of the job table, writes LocalSettings.TMP.php and starts and kills runners
+## in the container. Run it ONLY against a throw-away wiki; it refuses to run without
+## JOB_RUNNER_TEST_ALLOW_DESTRUCTIVE=1.
+##
+## Usage: JOB_RUNNER_TEST_ALLOW_DESTRUCTIVE=1 bash tests/test-job-runner.sh <wiki-container> [wiki-host]
+##   wiki-host: Host header the wiki answers to (default wiki.local)
+##
+## For the first check to prove anything, the container should run with a small datagram queue
+## (docker run --sysctl net.unix.max_dgram_qlen=10, the kernel default), otherwise it only warns.
+
+set -u
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+C="${1:-}"
+HOST="${2:-wiki.local}"
+fail=0
+check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; fail=1; fi; }
+
+[ "${JOB_RUNNER_TEST_ALLOW_DESTRUCTIVE:-}" = 1 ] || { echo "refusing: set JOB_RUNNER_TEST_ALLOW_DESTRUCTIVE=1 (throw-away wiki only)"; exit 2; }
+[ -n "$C" ] && [ "$(docker inspect -f '{{.State.Running}}' "$C" 2>/dev/null)" = true ] || { echo "usage: $0 <running wiki container>"; exit 2; }
+
+dx() { docker exec -w /var/www/html "$C" bash -c "$1"; }
+dxw() { docker exec -u www-data -w /var/www/html "$C" bash -c "$1"; }
+runners() { dx "pgrep -u www-data -f '[j]ob-runner.php' | wc -l"; }
+queue() { dxw "php maintenance/run.php showJobs 2>/dev/null | head -1"; }
+
+cleanup() {
+  dx "pkill -TERM -f '[r]un-jobs-daemon.sh'; pkill -KILL -u www-data -f '[j]ob-runner.php'; rm -f /var/www/html/LocalSettings.TMP.php /tmp/run-jobs.wake /tmp/run-jobs-daemon.*.flock /tmp/it-runner*.log; rm -rf /tmp/it-tools" >/dev/null 2>&1
+  dxw "php maintenance/run.php runJobs --maxjobs 0 >/dev/null 2>&1; true"
+}
+trap cleanup EXIT
+
+# The files under test, not the ones baked into the image.
+dx "rm -rf /tmp/it-tools && mkdir -p /tmp/it-tools/files"
+for f in job-runner.php run-jobs-daemon.sh files/job-wake.php; do docker cp "$ROOT/tools/$f" "$C:/tmp/it-tools/$f" >/dev/null; done
+dx "chmod +x /tmp/it-tools/run-jobs-daemon.sh; chmod -R a+rX /tmp/it-tools"
+reset() {
+  dx "pkill -TERM -f '[r]un-jobs-daemon.sh'; pkill -TERM -f '[j]ob-runner.php'; true" >/dev/null 2>&1
+  for _ in $(seq 40); do [ "$(runners)" = 0 ] && break; sleep 0.5; done
+  dx "pkill -KILL -u www-data -f '[j]ob-runner.php'; rm -f /tmp/run-jobs.wake /tmp/run-jobs.lock /tmp/run-jobs-daemon.*.flock"
+  dxw "php maintenance/run.php sql --query='DELETE FROM job' >/dev/null 2>&1"
+}
+start() { # <log> <args...>
+  local log=$1; shift
+  docker exec -d "$C" bash -c "setsid /tmp/it-tools/run-jobs-daemon.sh $* >$log 2>&1"
+}
+push_null() { # <n> <usleep>
+  dxw "echo '\$g=MediaWiki\\MediaWikiServices::getInstance()->getJobQueueGroup();\$k=0;while(\$k<$1){\$j=[];for(\$i=0;\$i<100&&\$k<$1;\$i++,\$k++){\$j[]=new NullJob([\"usleep\"=>$2,\"i\"=>\$k]);}\$g->push(\$j);}' | php maintenance/run.php eval >/dev/null"
+}
+wait_busy() { for _ in $(seq 60); do [ "$(runners)" -ge 2 ] && return 0; sleep 0.5; done; return 1; }
+
+dx "printf '<?php\nrequire_once \"/tmp/it-tools/files/job-wake.php\";\n' > /var/www/html/LocalSettings.TMP.php"
+qlen=$(dx "cat /proc/sys/net/unix/max_dgram_qlen")
+[ "$qlen" -le 20 ] || echo "note: max_dgram_qlen=$qlen, the busy-writer check proves little (use --sysctl net.unix.max_dgram_qlen=10)"
+
+## 1. Writers are not held up while the runner works (the queue of the wake socket is full).
+reset
+start /tmp/it-runner1.log --type=smw.update --then-all
+sleep 3
+push_null 3000 100000
+wait_busy; check "runner is busy (child running)" 0 $?
+max=0
+for i in $(seq 30); do
+  t=$(dx "curl -s -o /dev/null -m 90 -w '%{time_total}' -H 'Host: $HOST' -X POST -d 'action=query&meta=siteinfo&format=json' http://localhost/api.php")
+  max=$(awk -v a="$t" -v b="$max" 'BEGIN{print (a>b)?a:b}')
+done
+check "30 POSTs while the runner works, slowest < 1 s (slowest $max s)" yes "$(awk -v m="$max" 'BEGIN{print (m<1)?"yes":"no"}')"
+
+## 2. A second daemon with other arguments must not take over the wake socket of the first.
+ino1=$(dx "stat -c %i /tmp/run-jobs.wake")
+start /tmp/it-runner2.log --type=refreshLinks --then-all
+sleep 6
+check "wake socket is still the first runner's" "$ino1" "$(dx "stat -c %i /tmp/run-jobs.wake")"
+check "second runner says it polls only" 1 "$(dx "grep -c 'in use by another runner' /tmp/it-runner2.log")"
+
+## 3. SIGTERM while a child works on a long job: everything ends within the grace period.
+reset
+start /tmp/it-runner3.log --type=smw.update --then-all --stop-grace=3
+sleep 3
+push_null 5 30000000
+wait_busy
+dx "pkill -TERM -f '[r]un-jobs-daemon.sh'"
+t0=$(date +%s)
+for _ in $(seq 120); do [ "$(runners)" = 0 ] && break; sleep 0.25; done
+el=$(( $(date +%s) - t0 ))
+check "runner and child gone within grace+kill margin, <= 8 s (took $el s)" yes "$([ "$el" -le 8 ] && echo yes || echo no)"
+
+## 4. No lost wake-up: with a poll interval of 30 s only the wake-up can start the job.
+reset
+start /tmp/it-runner4.log --type=smw.update --then-all --poll-ms=30000 --force-interval=3600
+sleep 4
+lost=0
+for i in $(seq 15); do
+  dxw "echo '\$g=MediaWiki\\MediaWikiServices::getInstance()->getJobQueueGroup();\$g->push(new NullJob([\"usleep\"=>0,\"i\"=>$i]));\$c=@stream_socket_client(\"udg:///tmp/run-jobs.wake\");fwrite(\$c,\"1\");' | php maintenance/run.php eval >/dev/null"
+  ok=0
+  for _ in $(seq 30); do [ "$(queue)" = 0 ] && { ok=1; break; }; sleep 0.1; done
+  [ $ok = 1 ] || lost=$((lost + 1))
+done
+check "15 jobs started by the wake-up alone (poll 30 s), none left waiting 3 s" 0 "$lost"
+
+exit $fail

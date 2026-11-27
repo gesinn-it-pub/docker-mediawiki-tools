@@ -58,7 +58,9 @@ run-jobs-daemon.sh --type=smw.update --then-all
   recycle stale claims), `--max-runtime` (900 s) and `--memory-limit` (512 MB) after which the
   runner exits and is restarted, `--no-wake`, `--verbose`. Run with `--help` for the list.
 * Runner and daemon exit cleanly on SIGTERM/SIGINT; the daemon restarts the runner immediately
-  after a planned exit and after a 1 s pause on errors.
+  after a planned exit and after a 1 s pause on errors. If a child is working on a batch, it gets
+  `--stop-grace` seconds (5) to finish, then SIGTERM, two seconds later SIGKILL. A job cut off this
+  way stays claimed until MediaWiki recycles the claim and runs it again.
 
 Ofelia example (replaces the frequent `run-jobs.sh` labels; the watchdog just makes sure one
 runner is running):
@@ -94,6 +96,16 @@ socket owned by the runner (`RUN_JOBS_WAKE_SOCKET`, default `/tmp/run-jobs.wake`
 Without a runner nothing happens; jobs queued by CLI scripts or cron are still found by polling.
 The web server and the runner must run as the same user (`www-data`).
 
+The wake-up can never delay or break a request: the sender sets the socket to non-blocking and
+swallows every error, and a full queue (`net.unix.max_dgram_qlen`, 10 by default) just drops the
+byte, because a pending byte already means "wake up". (A blocking write to a full datagram socket
+waits for `default_socket_timeout`, 60 s, and Apache holds the response open until then; in a
+measurement this made POSTs hang and, with enough of them, also slowed down plain page views.)
+The runner empties the socket before every poll of the job table, also while a child works and
+while the lock file pauses it, so no wake-up is lost and the queue does not fill up. A runner does
+not take over the socket of another live runner (for example a second daemon with other
+arguments); it logs this and polls only.
+
 **OPcache for the CLI.** The image has `opcache.enable_cli` off, which makes every CLI bootstrap
 slow. `run-jobs-daemon.sh` therefore starts the runner with an OPcache file cache in
 `/tmp/php-opcache-cli` (private to `www-data`, it holds executable code). Override the PHP options
@@ -116,6 +128,8 @@ earlier ones is not established, so this is an observation, not a guarantee.
 
 ```sh
 bash tests/test-run-jobs-daemon.sh   # daemon lock, TERM handling and restart, with stubbed sudo/php
+php tests/test-job-wake.php            # wake-up sender: never blocks, never throws (no MediaWiki needed)
+JOB_RUNNER_TEST_ALLOW_DESTRUCTIVE=1 bash tests/test-job-runner.sh <container>   # needs a running throw-away wiki
 ```
 
 ## Try it

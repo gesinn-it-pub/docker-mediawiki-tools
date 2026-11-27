@@ -71,6 +71,7 @@ class JobRunnerDaemon extends Maintenance {
 		$this->addOption( 'verbose', 'Log every batch to stderr' );
 		$this->addOption( 'isolation', 'fork (default), exit or none - see file header', false, true );
 		$this->addOption( 'keep-process', 'Same as --isolation=none (diagnostics only)' );
+		$this->addOption( 'stop-grace', 'Seconds a running child may finish after SIGTERM/SIGINT before it is terminated (default 5)', false, true );
 		$this->addOption( 'fair-after', 'Busy priority batches before one generic batch (default 5)', false, true );
 	}
 
@@ -84,6 +85,7 @@ class JobRunnerDaemon extends Maintenance {
 		$maxJobs = (int)$this->getOption( 'max-jobs', 20 );
 		$forceEvery = (int)$this->getOption( 'force-interval', 30 );
 		$fairAfter = max( 1, (int)$this->getOption( 'fair-after', 5 ) );
+		$stopGrace = max( 0, (int)$this->getOption( 'stop-grace', 5 ) );
 		$lockFile = getenv( 'RUN_JOBS_LOCK_FILE' ) ?: '/tmp/run-jobs.lock';
 
 		if ( function_exists( 'pcntl_async_signals' ) ) {
@@ -122,8 +124,18 @@ class JobRunnerDaemon extends Maintenance {
 		$wake = null;
 		$wakePath = getenv( 'RUN_JOBS_WAKE_SOCKET' ) ?: '/tmp/run-jobs.wake';
 		if ( !$this->hasOption( 'no-wake' ) ) {
-			@unlink( $wakePath );
-			$wake = @stream_socket_server( "udg://$wakePath", $errno, $errstr, STREAM_SERVER_BIND );
+			// Never take over the socket of a live runner (e.g. a second daemon
+			// with other arguments): it would silently lose its wake-ups. A
+			// socket file nobody listens on (crashed runner) is stale and
+			// replaced. Without the socket this runner just polls.
+			$probe = file_exists( $wakePath ) ? @stream_socket_client( "udg://$wakePath", $e, $m ) : false;
+			if ( $probe ) {
+				fclose( $probe );
+				fwrite( STDERR, "job-runner: wake socket $wakePath is in use by another runner, polling only\n" );
+			} else {
+				@unlink( $wakePath );
+			}
+			$wake = $probe ? false : @stream_socket_server( "udg://$wakePath", $errno, $errstr, STREAM_SERVER_BIND );
 			if ( $wake ) {
 				@chmod( $wakePath, 0600 );
 				stream_set_blocking( $wake, false );
@@ -134,7 +146,22 @@ class JobRunnerDaemon extends Maintenance {
 				$wake = null;
 			}
 		}
-		$idle = static function ( int $us ) use ( &$wake ): void {
+		// Empty the wake socket. Must run BEFORE every poll of the job table, never
+		// after: a wake-up is sent after its jobs are committed, so a poll that
+		// follows the drain sees them, and one that arrives later stays queued
+		// and ends the next wait at once. Bounded, so a flood cannot stall the loop.
+		$drain = static function () use ( &$wake ): void {
+			if ( $wake === null ) {
+				return;
+			}
+			for ( $i = 0; $i < 1000; $i++ ) {
+				$d = @stream_socket_recvfrom( $wake, 64 );
+				if ( $d === false || $d === '' ) {
+					break;
+				}
+			}
+		};
+		$idle = static function ( int $us ) use ( &$wake, $drain ): void {
 			if ( $wake === null ) {
 				usleep( $us );
 				return;
@@ -142,12 +169,40 @@ class JobRunnerDaemon extends Maintenance {
 			$r = [ $wake ];
 			$w = $e = null;
 			if ( @stream_select( $r, $w, $e, intdiv( $us, 1000000 ), $us % 1000000 ) > 0 ) {
-				for ( $i = 0; $i < 100; $i++ ) { // drain
-					$d = @stream_socket_recvfrom( $wake, 64 );
-					if ( $d === false || $d === '' ) {
-						break;
+				$drain();
+			}
+		};
+
+		// Wait for the forked child without blocking: the wake socket keeps
+		// being drained (a blocked reader let the writers' queue fill up), and
+		// a stop request is honoured: the child gets $stopGrace seconds to
+		// finish, then SIGTERM, two seconds later SIGKILL. Returns the exit code.
+		$waitChild = function ( int $pid ) use ( $idle, $stopGrace ): int {
+			$stopAt = null;
+			$sent = 0;
+			while ( true ) {
+				$r = pcntl_waitpid( $pid, $status, WNOHANG );
+				if ( $r === $pid ) {
+					return pcntl_wifexited( $status ) ? pcntl_wexitstatus( $status ) : 1;
+				}
+				if ( $r === -1 ) {
+					if ( pcntl_get_last_error() === PCNTL_EINTR ) {
+						continue;
+					}
+					return 1; // ECHILD or worse: the child is gone, count it as failed
+				}
+				if ( $this->stop && function_exists( 'posix_kill' ) ) {
+					$stopAt ??= microtime( true );
+					$waited = microtime( true ) - $stopAt;
+					if ( $sent === 0 && $waited >= $stopGrace ) {
+						posix_kill( $pid, SIGTERM );
+						$sent = 1;
+					} elseif ( $sent === 1 && $waited >= $stopGrace + 2 ) {
+						posix_kill( $pid, SIGKILL );
+						$sent = 2;
 					}
 				}
+				$idle( 25000 );
 			}
 		};
 
@@ -166,7 +221,7 @@ class JobRunnerDaemon extends Maintenance {
 		};
 		$log( "isolation=$mode wake=" . ( $wake ? 'on' : 'off' ) . " poll-ms=" . intdiv( $pollUs, 1000 ) );
 
-		$batch = function ( $jobType ) use ( $runner, $maxJobs, $mode, $lbFactory, $log, &$wake ): array {
+		$batch = function ( $jobType ) use ( $runner, $maxJobs, $mode, $lbFactory, $log, &$wake, $waitChild ): array {
 			$opts = [
 				'type' => $jobType !== '' ? $jobType : false,
 				'maxJobs' => $maxJobs,
@@ -207,10 +262,7 @@ class JobRunnerDaemon extends Maintenance {
 					exit( 1 );
 				}
 			}
-			do {
-				$r = pcntl_waitpid( $pid, $status );
-			} while ( $r === -1 && pcntl_get_last_error() === PCNTL_EINTR );
-			$code = pcntl_wifexited( $status ) ? pcntl_wexitstatus( $status ) : 1;
+			$code = $waitChild( $pid );
 			$log( sprintf( 'child type=%s exit=%d', $jobType !== '' ? $jobType : '*', $code ) );
 			return [ 'reached' => $code === 1 ? 'exception' : 'none-ready', 'jobs' => $code === 0 ? [ 1 ] : [] ];
 		};
@@ -223,9 +275,10 @@ class JobRunnerDaemon extends Maintenance {
 					return;
 				}
 				if ( file_exists( $lockFile ) ) {
-					sleep( 1 );
+					$idle( 1000000 );
 					continue;
 				}
+				$drain(); // before the poll, see $drain
 				// Drop any snapshot so the polls see committed rows.
 				$lbFactory->flushReplicaSnapshots( __METHOD__ );
 
