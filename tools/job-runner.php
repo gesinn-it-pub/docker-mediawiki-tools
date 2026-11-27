@@ -12,6 +12,12 @@
  *                       run all other types (one process for both, replaces
  *                       a fast per-type cycle plus a generic cycle)
  *   (no --type)         run all types
+ *   --exclude-type=A,B  the all-types part (no --type, or --then-all) does not run
+ *                       the types A and B: leave them to another runner, e.g. one
+ *                       with --type=A (two lanes, see README). Without a job class
+ *                       or in $wgJobTypesExcludedFromDefaultQueue a type is never
+ *                       run by the all-types part, and rows of such types do not
+ *                       wake the runner either.
  *
  * Behaviour:
  *  - Pauses while the lock file ($RUN_JOBS_LOCK_FILE, default
@@ -61,6 +67,7 @@ class JobRunnerDaemon extends Maintenance {
 		parent::__construct();
 		$this->addDescription( 'Long-running job runner with in-process polling' );
 		$this->addOption( 'type', 'Job type to run (with priority)', false, true );
+		$this->addOption( 'exclude-type', 'Comma separated job types the all-types part must not run (leave them to another runner)', false, true );
 		$this->addOption( 'then-all', 'After the type is drained also run all other types' );
 		$this->addOption( 'poll-ms', 'Idle poll interval in ms (default 500; 1000 when the wake socket is active)', false, true );
 		$this->addOption( 'no-wake', 'Do not listen on the wake socket (see tools/files/job-wake.php)' );
@@ -117,6 +124,15 @@ class JobRunnerDaemon extends Maintenance {
 					->groupBy( 'job_cmd' )->caller( __METHOD__ )->fetchFieldValues();
 			}
 			return $group->getQueuesWithJobs();
+		};
+
+		// Types the all-types part may run: those MediaWiki runs by default (jobs of a type
+		// without a job class, or excluded from the default queue, can never be run by it
+		// and would make every poll start a child for nothing), minus --exclude-type.
+		$excluded = array_values( array_filter(
+			array_map( 'trim', explode( ',', (string)$this->getOption( 'exclude-type', '' ) ) ), 'strlen' ) );
+		$genericTypes = static function ( array $pending ) use ( $group, $excluded ): array {
+			return array_values( array_intersect( $pending, array_diff( $group->getDefaultQueueTypes(), $excluded ) ) );
 		};
 
 		// Wake-up socket: a unix datagram socket the web side pings after a
@@ -221,15 +237,41 @@ class JobRunnerDaemon extends Maintenance {
 		};
 		$log( "isolation=$mode wake=" . ( $wake ? 'on' : 'off' ) . " poll-ms=" . intdiv( $pollUs, 1000 ) );
 
-		$batch = function ( $jobType ) use ( $runner, $maxJobs, $mode, $lbFactory, $log, &$wake, $waitChild ): array {
+		$batch = function ( $jobType, ?array $only = null ) use ( $runner, $maxJobs, $mode, $lbFactory, $log, &$wake, $waitChild, $excluded, $group ): array {
 			$opts = [
 				'type' => $jobType !== '' ? $jobType : false,
 				'maxJobs' => $maxJobs,
 				'maxTime' => 60,
 				'throttle' => true,
 			];
+			// With --exclude-type the all-types part runs the allowed types one after the other
+			// (in random order, like MediaWiki does) within the same batch budget.
+			$run = static function () use ( $runner, $opts, $jobType, $only, $excluded, $group ): array {
+				if ( $jobType !== '' || $excluded === [] ) {
+					return $runner->run( $opts );
+				}
+				$types = $only ?? array_diff( $group->getDefaultQueueTypes(), $excluded );
+				shuffle( $types );
+				$start = microtime( true );
+				$left = $opts['maxJobs'];
+				$res = [ 'reached' => 'none-ready', 'jobs' => [] ];
+				foreach ( $types as $t ) {
+					$time = $opts['maxTime'] - (int)( microtime( true ) - $start );
+					if ( $left <= 0 || $time <= 0 ) {
+						break;
+					}
+					$one = $runner->run( [ 'type' => $t, 'maxJobs' => $left, 'maxTime' => $time ] + $opts );
+					$res['jobs'] = array_merge( $res['jobs'], $one['jobs'] );
+					$left -= count( $one['jobs'] );
+					if ( in_array( $one['reached'], [ 'memory-limit', 'exception' ], true ) ) {
+						$res['reached'] = $one['reached'];
+						break;
+					}
+				}
+				return $res;
+			};
 			if ( $mode !== 'fork' ) {
-				$res = $runner->run( $opts );
+				$res = $run();
 				$log( sprintf( 'batch type=%s reached=%s jobs=%d',
 					$jobType !== '' ? $jobType : '*', $res['reached'], count( $res['jobs'] ) ) );
 				return $res;
@@ -254,7 +296,7 @@ class JobRunnerDaemon extends Maintenance {
 				pcntl_signal( SIGTERM, SIG_DFL );
 				pcntl_signal( SIGINT, SIG_DFL );
 				try {
-					$res = $runner->run( $opts );
+					$res = $run();
 					exit( in_array( $res['reached'], [ 'memory-limit', 'exception' ], true )
 						? 1 : ( $res['jobs'] === [] ? 3 : 0 ) );
 				} catch ( Throwable $e ) {
@@ -289,16 +331,18 @@ class JobRunnerDaemon extends Maintenance {
 				$otherTurn = $thenAll && $streak >= $fairAfter;
 
 				$types = $force ? [] : $pendingTypes();
-				if ( !$otherTurn && ( $force || ( $type !== '' ? in_array( $type, $types, true ) : $types !== [] ) ) ) {
-					$res = $batch( $type );
+				$generic = $genericTypes( $types );
+				$only = $force ? null : $generic;
+				if ( !$otherTurn && ( $force || ( $type !== '' ? in_array( $type, $types, true ) : $generic !== [] ) ) ) {
+					$res = $batch( $type, $only );
 					if ( in_array( $res['reached'], [ 'memory-limit', 'exception' ], true ) ) {
 						return;
 					}
 					$busy = $res['jobs'] !== [];
 					$streak = $busy ? $streak + 1 : 0;
 				}
-				if ( !$busy && $thenAll && !file_exists( $lockFile ) && ( $force || $types !== [] || $otherTurn ) ) {
-					$res = $batch( '' );
+				if ( !$busy && $thenAll && !file_exists( $lockFile ) && ( $force || $generic !== [] || $otherTurn ) ) {
+					$res = $batch( '', $only );
 					if ( in_array( $res['reached'], [ 'memory-limit', 'exception' ], true ) ) {
 						return;
 					}

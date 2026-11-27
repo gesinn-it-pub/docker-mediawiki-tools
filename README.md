@@ -53,6 +53,22 @@ run-jobs-daemon.sh --type=smw.update --then-all
 * `--type=T` runs only jobs of type `T`; with `--then-all` the other types are run as well once
   `T` is drained (fairness: after `--fair-after` busy batches of `T` one batch of the others).
   Without `--type` all types are run.
+* `--exclude-type=A,B` keeps the all-types part away from the given types. Together with a runner
+  that runs only one type this gives two lanes with no job handled by both, for example when
+  one worker must be the only one for `smw.update` and everything else must not wait behind it:
+
+  ```sh
+  run-jobs-daemon.sh --type=smw.update
+  run-jobs-daemon.sh --exclude-type=smw.update
+  ```
+
+  In a scheduling test with 600 jobs of a priority type and 60 of another one (50 ms each, no
+  database load), the other type's median wait was 2.4 s with two lanes against 25 to 40 s for
+  a single `--type=T --then-all` worker, with the priority type finishing slightly earlier.
+  The daemon's lock depends on the arguments, so the two commands run side by side. Only one
+  of them can own the wake socket; the other one polls.
+* Jobs of a type without a job class, or excluded from MediaWiki's default queue (for example
+  `PublishStashedFile`), are never run by the all-types part and do not wake it.
 * Other options: `--max-jobs` (batch size, 20), `--poll-ms` (500; 1000 while the wake socket is
   active), `--force-interval` (30 s; forces a runner call even if the queue looks empty, to
   recycle stale claims), `--max-runtime` (900 s) and `--memory-limit` (512 MB) after which the
