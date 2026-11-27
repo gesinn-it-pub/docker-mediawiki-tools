@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 C="${1:-}"
 HOST="${2:-wiki.local}"
 fail=0
-want() { case " ${TESTS:-1 2 3 4 5 6} " in *" $1 "*) return 0 ;; esac; return 1; }
+want() { case " ${TESTS:-1 2 3 4 5 6 7 8 9} " in *" $1 "*) return 0 ;; esac; return 1; }
 check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected '$2', got '$3'"; fail=1; fi; }
 
 [ "${JOB_RUNNER_TEST_ALLOW_DESTRUCTIVE:-}" = 1 ] || { echo "refusing: set JOB_RUNNER_TEST_ALLOW_DESTRUCTIVE=1 (throw-away wiki only)"; exit 2; }
@@ -64,6 +64,19 @@ class ItProbeJob extends Job implements GenericParameterJob {
 	public function run() { file_put_contents( '/tmp/it-probe.log', "1\n", FILE_APPEND | LOCK_EX ); return true; }
 }
 $wgJobClasses['itprobe'] = 'ItProbeJob';
+// Jobs that go wrong in different ways.
+abstract class ItBadJob extends Job implements GenericParameterJob {
+	public function __construct( array $params ) { parent::__construct( static::TYPE, $params ); }
+}
+class ItThrowJob extends ItBadJob { const TYPE = 'itthrow'; public function run() { throw new RuntimeException( 'job exploded' ); } }
+class ItExitJob extends ItBadJob { const TYPE = 'itexit'; public function run() { exit( 7 ); } }
+class ItKillJob extends ItBadJob { const TYPE = 'itkill'; public function run() { posix_kill( getmypid(), SIGKILL ); return true; } }
+class ItMemJob extends ItBadJob {
+	const TYPE = 'itmem';
+	public function run() { ini_set( 'memory_limit', '64M' ); $a = []; while ( true ) { $a[] = str_repeat( 'x', 1000000 ); } }
+}
+$wgJobClasses['itthrow'] = 'ItThrowJob'; $wgJobClasses['itexit'] = 'ItExitJob';
+$wgJobClasses['itkill'] = 'ItKillJob'; $wgJobClasses['itmem'] = 'ItMemJob';
 EOF
 qlen=$(dx "cat /proc/sys/net/unix/max_dgram_qlen")
 [ "$qlen" -le 20 ] || echo "note: max_dgram_qlen=$qlen, the busy-writer check proves little (use --sysctl net.unix.max_dgram_qlen=10)"
@@ -159,6 +172,52 @@ sleep 1
 f1=$(forks /tmp/it-runner6.log); sleep 4; f2=$(forks /tmp/it-runner6.log)
 check "no child per poll for a row nobody can run ($f1 -> $f2 forks in 4 s)" "$f1" "$f2"
 
+fi
+
+# A row as a crashed or abandoned worker leaves it: claimed, with a claim time <age> hours ago.
+stale_row() { # <type> <attempts> <age in hours>
+  local ts; ts=$(dx "date -u -d '$3 hours ago' +%Y%m%d%H%M%S")
+  dxw "php maintenance/run.php sql --query=\"INSERT INTO job (job_cmd,job_namespace,job_title,job_timestamp,job_params,job_random,job_attempts,job_token,job_token_timestamp,job_sha1) VALUES ('$1',0,'X','$ts','a:0:{}',0,$2,'stale-token','$ts','')\" >/dev/null"
+}
+probe_runs() { dx "cat /tmp/it-probe.log 2>/dev/null | wc -l"; }
+wait_probe() { for _ in $(seq $(( $1 * 4 ))); do [ "$(probe_runs)" -ge 1 ] && return 0; sleep 0.25; done; return 1; }
+
+## 7. A claim a dead worker left behind is recycled and the job runs again (MediaWiki hands such
+##    jobs back after the claim time, but only when a pop happens for their type; the runners force one).
+if want 7; then
+for lane in "--type=itprobe" "--exclude-type=null" ""; do
+  reset; dx "rm -f /tmp/it-probe.log"
+  start /tmp/it-runner7.log $lane --poll-ms=200 --force-interval=3 --no-wake
+  sleep 4; stale_row itprobe 1 2
+  wait_probe 20; check "stale claim is recycled and run [runner ${lane:-without options}]" 1 "$(probe_runs)"
+done
+fi
+
+## 8. Jobs that must NOT run again: a job given up after its last try, and a claim still within the claim time.
+if want 8; then
+for case in "3 2:given up after 3 tries" "1 0:claimed just now"; do
+  att=${case%% *}; rest=${case#* }; age=${rest%%:*}; label=${rest#*:}
+  reset; dx "rm -f /tmp/it-probe.log"
+  start /tmp/it-runner8.log --exclude-type=null --poll-ms=200 --force-interval=3 --no-wake
+  sleep 4; stale_row itprobe "$att" "$age"
+  wait_probe 12; check "job $label is not run" 0 "$(probe_runs)"
+  check "job $label stays in the queue" 1 "$(dxw "php maintenance/run.php sql --query=\"SELECT COUNT(*) AS c FROM job\" | grep -o '=> [0-9]*' | grep -o '[0-9]*'")"
+done
+fi
+
+## 9. Jobs that go wrong must not take the runner down or stop the others: an exception, exit(),
+##    a fatal error (memory) and a kill of the child; the good jobs around them still run, and
+##    no process is started in a loop afterwards.
+if want 9; then
+reset; dx "rm -f /tmp/it-probe.log"
+start /tmp/it-runner9.log --exclude-type=null --poll-ms=200 --force-interval=3600 --no-wake --verbose
+sleep 4
+dxw "echo '\$g=MediaWiki\\MediaWikiServices::getInstance()->getJobQueueGroup();\$j=[];foreach([[\"ItProbeJob\",3],[\"ItThrowJob\",1],[\"ItExitJob\",1],[\"ItKillJob\",1],[\"ItMemJob\",1],[\"ItProbeJob\",3]] as [\$c,\$n]) for(\$i=0;\$i<\$n;\$i++) \$j[]=new \$c([\"i\"=>\$i,\"u\"=>\$c.\$i]);\$g->push(\$j);' | php maintenance/run.php eval >/dev/null"
+for _ in $(seq 160); do [ "$(probe_runs)" -ge 6 ] && break; sleep 0.25; done
+check "the 6 good jobs around the bad ones all ran" 6 "$(probe_runs)"
+check "the runner is still alive" yes "$([ "$(runners)" -ge 1 ] && echo yes || echo no)"
+sleep 3; f1=$(forks /tmp/it-runner9.log); sleep 6; f2=$(forks /tmp/it-runner9.log)
+check "no processes are started in a loop afterwards ($f1 -> $f2 forks)" "$f1" "$f2"
 fi
 
 exit $fail

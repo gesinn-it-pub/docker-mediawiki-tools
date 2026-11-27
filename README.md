@@ -73,6 +73,15 @@ run-jobs-daemon.sh --type=smw.update --then-all
   active), `--force-interval` (30 s; forces a runner call even if the queue looks empty, to
   recycle stale claims), `--max-runtime` (900 s) and `--memory-limit` (512 MB) after which the
   runner exits and is restarted, `--no-wake`, `--verbose`. Run with `--help` for the list.
+* Claims left behind by a dead worker are handed back by MediaWiki after the claim time (one hour), but
+  only when a pop happens for the job type. The runner forces one every `--force-interval` (30 s), so
+  a recycled job runs again within seconds of that; do not set the interval to a very large value. A
+  job given up after its third try is not run again, a claim within the claim time is not taken over.
+* A job that throws is caught by MediaWiki and counts as failed. A job that ends its process (fatal error,
+  `exit`, kill) only ends the forked child: the runner goes on with the other jobs (it restarts once when
+  the child was killed by a signal) and does not start processes in a loop. The job stays claimed and is
+  tried again after the claim time, up to 3 times. With `--isolation=exit` or `none` such a crash ends the
+  runner itself; the daemon restarts it.
 * Runner and daemon exit cleanly on SIGTERM/SIGINT; the daemon restarts the runner immediately
   after a planned exit and after a 1 s pause on errors. If a child is working on a batch, it gets
   `--stop-grace` seconds (5) to finish, then SIGTERM, two seconds later SIGKILL. A job cut off this
